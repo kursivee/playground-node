@@ -1,41 +1,89 @@
-const { ApolloServer, gql } = require('apollo-server');
+import apollo from 'apollo-server'
+const { ApolloServer, gql } = apollo
+import redisSub from 'graphql-redis-subscriptions';
+const { RedisPubSub } = redisSub
+import Redis from 'ioredis';
 
-// A schema is a collection of type definitions (hence "typeDefs")
-// that together define the "shape" of queries that are executed against
-// your data.
-const typeDefs = gql`
-  # Comments in GraphQL strings (such as this one) start with the hash (#) symbol.
-
-  # This "Book" type defines the queryable fields for every book in our data source.
-  type Book {
-    title: String
-    author: String
+const options = {
+  host: "127.0.0.1",
+  port: 6378,
+  retryStrategy: times => {
+    // reconnect after
+    return Math.min(times * 50, 2000);
   }
+};
 
-  # The "Query" type is special: it lists all of the available queries that
-  # clients can execute, along with the return type for each. In this
-  # case, the "books" query returns an array of zero or more Books (defined above).
+const pubsub = new RedisPubSub({
+  publisher: new Redis(options),
+  subscriber: new Redis(options)
+});
+
+const SERVER_STATUS_UPDATE = 'server_status_update'
+
+const typeDefs = gql`
   type Query {
-    books: [Book]
+    servers: [Server]
+  }
+  
+  type Mutation {
+      setServerStatus(id: ID!, outage: Boolean!): Boolean
+    }
+  
+  type Server {
+    id: ID!
+    name: String!
+    outage: Boolean
+  }
+  
+  type Subscription {
+    serverStatus(id: ID): Server
   }
 `;
 
-const books = [
+const servers = [
     {
-      title: 'Harry Potter and the Chamber of Secrets',
-      author: 'J.K. Rowling',
+        id: "1",
+        name: "Server 1",
+        outage: false
     },
     {
-      title: 'Jurassic Park',
-      author: 'Michael Crichton',
+        id: "2",
+        name: "Server 2",
+        outage: false
     },
-];
+    {
+        id: "3",
+        name: "Server 3",
+        outage: false
+    },
+    {
+        id: "4",
+        name: "Server 4",
+        outage: false
+    }
+]
 
-// Resolvers define the technique for fetching the types defined in the
-// schema. This resolver retrieves books from the "books" array above.
 const resolvers = {
     Query: {
-      books: () => books,
+        servers: () => {
+          return servers
+        }
+    },
+    Mutation: {
+        setServerStatus: (_, args) => {
+            const server = servers.find(server => {
+                return server.id === args.id
+            })
+            server.outage = args.outage
+            pubsub.publish(`${SERVER_STATUS_UPDATE}${server.id}`, {
+                serverStatus: server
+            })
+        }
+    },
+    Subscription: {
+        serverStatus: {
+            subscribe: (_, args) => pubsub.asyncIterator(`${SERVER_STATUS_UPDATE}${args.id}`)
+        }
     },
 };
 
